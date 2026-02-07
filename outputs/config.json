@@ -1,0 +1,19 @@
+{
+  "train_list": "processed/cn_celeb2/train_fbank_list.txt",
+  "val_list": "processed/cn_celeb2/val_meta.jsonl",
+  "feat_dim": 80,
+  "channels": 512,
+  "emb_dim": 256,
+  "margin": 0.4,
+  "scale": 40.0,
+  "epochs": 150,
+  "batch_size": 128,
+  "num_workers": 2,
+  "lr": 0.0003,
+  "weight_decay": 3e-05,
+  "grad_clip": 5.0,
+  "device": "cuda",
+  "amp": true,
+  "out_dir": "outputs",
+  "save_best": true
+}
