@@ -16,9 +16,6 @@ def load_wav_mono(path: str, target_sr: int = TARGET_SR) -> torch.Tensor:
     return wav.contiguous()
 
 def random_crop_or_repeat(wav: torch.Tensor, length: int) -> torch.Tensor:
-    """
-    训练时常用：随机截取固定长度，不足则循环拼接
-    """
     T = wav.numel()
     if T == length:
         return wav

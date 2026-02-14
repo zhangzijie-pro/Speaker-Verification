@@ -1,16 +1,24 @@
+"""
+Speaker Verification Evaluation Script
+使用方式：
+    python verify.py --val_meta processed/cn_celeb2/val_meta.jsonl --ckpt outputs/best.pt
+"""
+
 import os
 import json
 import random
+import argparse
 from collections import defaultdict
 
 import torch
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+from tqdm import tqdm
 
+from utils.meters import compute_eer, roc_points, det_points, recall_at_k, _l2norm
+from utils.path_utils import _resolve_path
 from models.ecapa import ECAPA_TDNN
 
-# t-SNE 可视化（需要 pip install scikit-learn）
 try:
     from sklearn.manifold import TSNE
     _HAS_SKLEARN = True
@@ -18,36 +26,11 @@ except Exception:
     _HAS_SKLEARN = False
 
 
-def _clean_path_str(p: str) -> str:
-    p = p.strip().strip('"').strip("'").strip()
-    p = p.lstrip("\ufeff")
-    p = p.replace("\\", "/")
-    return p
-
-
-def _resolve_path(p: str, base_dir: str) -> str:
-    p = _clean_path_str(p)
-    if not os.path.isabs(p):
-        p = os.path.abspath(os.path.join(base_dir, p))
-    else:
-        p = os.path.abspath(p)
-
-    p = os.path.normpath(p).replace("\\", "/")
-    # 常见错误：processed/processed
-    p = p.replace("/processed/processed/", "/processed/")
-    return p
-
-
 def read_meta_jsonl(meta_path: str):
-    """
-    读取 meta.jsonl:
-      {"split":"val","spk":"id0001","feat":".../xxx.pt","audio":"..."}
-    返回 items: [(spk_str, feat_abs_path)]
-    """
     meta_path = os.path.abspath(meta_path)
     base_dir = os.path.dirname(meta_path)
-
     items = []
+
     with open(meta_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -64,33 +47,26 @@ def read_meta_jsonl(meta_path: str):
 # Pair building
 # =========================
 def build_pairs(items, num_pos=3000, num_neg=3000, seed=1234):
-    """
-    items: [(spk_str, feat_path)]
-    返回 pairs: [(is_same(1/0), p1, p2)]
-    """
     random.seed(seed)
-
     spk2paths = defaultdict(list)
     for spk, p in items:
         spk2paths[spk].append(p)
 
-    spks_with2 = [s for s in spk2paths.keys() if len(spk2paths[s]) >= 2]
+    spks_with2 = [s for s in spk2paths if len(spk2paths[s]) >= 2]
     all_spks = list(spk2paths.keys())
 
-    if len(spks_with2) == 0 or len(all_spks) < 2:
-        raise RuntimeError(
-            f"Not enough speakers for pair sampling: speakers={len(all_spks)}, speakers_with2={len(spks_with2)}"
-        )
+    if len(spks_with2) == 0:
+        raise RuntimeError("Not enough speakers to generate positive pairs.")
 
     pairs = []
 
-    # 正对：同一说话人不同语句
+    # Positive pairs
     for _ in range(num_pos):
         spk = random.choice(spks_with2)
         p1, p2 = random.sample(spk2paths[spk], 2)
         pairs.append((1, p1, p2))
 
-    # 负对：不同说话人
+    # Negative pairs
     for _ in range(num_neg):
         s1, s2 = random.sample(all_spks, 2)
         p1 = random.choice(spk2paths[s1])
@@ -102,45 +78,28 @@ def build_pairs(items, num_pos=3000, num_neg=3000, seed=1234):
 
 
 # =========================
-# Embedding
+# Embedding Extraction
 # =========================
-def _l2norm(x: torch.Tensor, eps=1e-12):
-    return x / (x.norm(p=2, dim=-1, keepdim=True) + eps)
-
-
 @torch.no_grad()
 def load_feat_pt(feat_path: str):
-    feat_path = os.path.normpath(feat_path)
-
     if not os.path.exists(feat_path):
         return None
-
     try:
         feat = torch.load(feat_path, map_location="cpu", weights_only=True)
-    except TypeError:
+    except:
         feat = torch.load(feat_path, map_location="cpu")
-    except Exception:
+    if not torch.is_tensor(feat) or feat.dim() != 2:
         return None
-
-    if (not torch.is_tensor(feat)) or feat.dim() != 2:
-        return None
-    return feat  # [T, 80]
+    return feat
 
 
 @torch.no_grad()
-def embed_from_feat(model, feat: torch.Tensor, device: str,
-                    crop_frames: int = 300, num_crops: int = 5, seed: int = 1234):
-    """
-    验证推荐：固定长度crop + 多crop平均
-    feat: [T, 80]
-    return emb: [D] (cpu, normalized)
-    """
-    # 为了复现性：同一个feat，每次评估切片一致（可选）
+def embed_from_feat(model, feat: torch.Tensor, device, crop_frames=400, num_crops=6, seed=1234):
     rng = random.Random(seed)
-
     T = feat.size(0)
+
     if T <= crop_frames:
-        x = feat.unsqueeze(0).to(device)  # [1,T,80]
+        x = feat.unsqueeze(0).to(device)
         emb = model(x).squeeze(0).cpu()
         return _l2norm(emb)
 
@@ -151,334 +110,242 @@ def embed_from_feat(model, feat: torch.Tensor, device: str,
         x = chunk.unsqueeze(0).to(device)
         embs.append(model(x).squeeze(0).cpu())
 
-    emb = torch.stack(embs, dim=0).mean(dim=0)
+    emb = torch.stack(embs, 0).mean(0)
     return _l2norm(emb)
 
 
 @torch.no_grad()
-def embed_from_fbank_pt(model, feat_path: str, device: str,
-                        crop_frames: int = 300, num_crops: int = 5):
+def embed_from_fbank_pt(model, feat_path: str, device, crop_frames=400, num_crops=6):
     feat = load_feat_pt(feat_path)
     if feat is None:
         return None
-    emb = embed_from_feat(model, feat, device, crop_frames=crop_frames, num_crops=num_crops, seed=1234)
-    return emb
+    return embed_from_feat(model, feat, device, crop_frames, num_crops)
 
 
 def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
-    # a,b 已归一化时：点积=cos
     return float((a * b).sum().item())
 
 
 # =========================
-# Metrics
-# =========================
-def compute_eer(labels, scores):
-    pairs = sorted(zip(scores, labels), key=lambda x: x[0], reverse=True)
-
-    P = sum(labels)
-    N = len(labels) - P
-    fa = N
-    fr = 0
-
-    best_diff = 1.0
-    eer = 1.0
-    best_th = None
-
-    for th, lab in pairs:
-        if lab == 1:
-            fr += 1
-        else:
-            fa -= 1
-
-        far = fa / max(1, N)
-        frr = fr / max(1, P)
-        diff = abs(far - frr)
-        if diff < best_diff:
-            best_diff = diff
-            eer = 1-((far + frr) / 2.0)
-            best_th = th
-
-    return eer, best_th
-
-
-def roc_points(labels, scores, num_th=200):
-    mn, mx = min(scores), max(scores)
-    if mx == mn:
-        mx = mn + 1e-6
-    ths = [mn + (mx - mn) * i / (num_th - 1) for i in range(num_th)]
-    P = sum(labels)
-    N = len(labels) - P
-
-    tpr, fpr = [], []
-    for th in ths:
-        tp = sum(1 for l, s in zip(labels, scores) if l == 1 and s >= th)
-        fp = sum(1 for l, s in zip(labels, scores) if l == 0 and s >= th)
-        tpr.append(tp / max(1, P))
-        fpr.append(fp / max(1, N))
-    return fpr, tpr
-
-
-def det_points(labels, scores, num_th=400):
-    mn, mx = min(scores), max(scores)
-    if mx == mn:
-        mx = mn + 1e-6
-    ths = [mn + (mx - mn) * i / (num_th - 1) for i in range(num_th)]
-    P = sum(labels)
-    N = len(labels) - P
-
-    fars, frrs = [], []
-    for th in ths:
-        fa = sum(1 for l, s in zip(labels, scores) if l == 0 and s >= th)
-        fr = sum(1 for l, s in zip(labels, scores) if l == 1 and s < th)
-        fars.append(fa / max(1, N))
-        frrs.append(fr / max(1, P))
-    return fars, frrs
-
-
-def recall_at_k(embeddings: torch.Tensor, labels: torch.Tensor, ks=(1, 5, 10)):
-    """
-    embeddings: [M, D] normalized
-    labels: [M] speaker id int
-    """
-    sims = embeddings @ embeddings.t()
-    sims.fill_diagonal_(-1e9)
-    idx = torch.argsort(sims, dim=1, descending=True)
-
-    M = sims.size(0)
-    res = {}
-    for k in ks:
-        hit = 0
-        for i in range(M):
-            topk = idx[i, :k]
-            if (labels[topk] == labels[i]).any().item():
-                hit += 1
-        res[k] = hit / M
-    return res
-
-
-# =========================
-# t-SNE sampling
+# t-SNE + Recall@K
 # =========================
 @torch.no_grad()
-def collect_embeddings_for_tsne(model, items, device,
-                                max_spk=20, per_spk=25,
-                                crop_frames=300, num_crops=5, seed=1234):
+def collect_embeddings_for_tsne(model, items, device, max_spk=20, per_spk=25,
+                                crop_frames=400, num_crops=6, seed=1234):
     random.seed(seed)
     spk2paths = defaultdict(list)
     for spk, p in items:
         spk2paths[spk].append(p)
 
-    spks = [s for s in spk2paths.keys() if len(spk2paths[s]) >= 2]
+    spks = [s for s in spk2paths if len(spk2paths[s]) >= 2]
     random.shuffle(spks)
     spks = spks[:max_spk]
 
     X_list, y_list = [], []
     for spk in spks:
-        paths = spk2paths[spk][:]
-        random.shuffle(paths)
-        paths = paths[:per_spk]
+        paths = random.sample(spk2paths[spk], min(per_spk, len(spk2paths[spk])))
         for p in paths:
-            emb = embed_from_fbank_pt(model, p, device, crop_frames=crop_frames, num_crops=num_crops)
-            if emb is None:
-                continue
-            X_list.append(emb.numpy())
-            y_list.append(spk)
+            emb = embed_from_fbank_pt(model, p, device, crop_frames, num_crops)
+            if emb is not None:
+                X_list.append(emb.numpy())
+                y_list.append(spk)
 
     if len(X_list) == 0:
         return None, None
 
-    # speaker string -> int id（只用于可视化/recall）
     uniq = sorted(set(y_list))
     spk2id = {s: i for i, s in enumerate(uniq)}
     y = np.array([spk2id[s] for s in y_list], dtype=np.int64)
 
-    return np.stack(X_list, axis=0), y
+    return np.stack(X_list), y
 
 
 # =========================
-# Main
+# Main Function
 # =========================
-def main():
-    # ======= 你主要改这里 =======
-    VAL_META = r"processed/cn_celeb2/val_meta.jsonl"
-    CKPT     = r"outputs/best.pt"
-    OUT_DIR  = r"outputs_eval"
-    # crop参数：大约 300 帧≈3秒（10ms帧移）
-    CROP_FRAMES = 400
-    NUM_CROPS   = 6
+def main(args):
+    os.makedirs(args.out_dir, exist_ok=True)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
-    NUM_POS = 3000
-    NUM_NEG = 3000
-    SEED = 1234
-    # ============================
+    print("=" * 70)
+    print("Speaker Verification Evaluation")
+    print("=" * 70)
+    print(f"VAL_META   : {args.val_meta}")
+    print(f"CHECKPOINT : {args.ckpt}")
+    print(f"OUTPUT DIR : {args.out_dir}")
+    print(f"Crop Frames: {args.crop_frames} | Num Crops: {args.num_crops}")
+    print(f"Pairs      : {args.num_pos} pos + {args.num_neg} neg")
+    print(f"Device     : {args.device}")
+    print("=" * 70)
 
-    VAL_META = os.path.abspath(VAL_META)
-    CKPT = os.path.abspath(CKPT)
-    os.makedirs(OUT_DIR, exist_ok=True)
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    print("VAL_META =", VAL_META)
-    print("CKPT     =", CKPT)
+    # 1. Load meta
+    items = read_meta_jsonl(args.val_meta)
+    print(f"Loaded {len(items)} utterances from {len(set(spk for spk, _ in items))} speakers\n")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # 2. Build pairs
+    pairs = build_pairs(items, num_pos=args.num_pos, num_neg=args.num_neg, seed=args.seed)
+    print(f"Generated {len(pairs)} pairs\n")
 
-    # 1) 读 val_meta
-    items = read_meta_jsonl(VAL_META)
-    print("items:", len(items))
+    # 3. Load model
+    ckpt = torch.load(args.ckpt, map_location="cpu")
+    model = ECAPA_TDNN(
+        in_channels=80,
+        channels=args.channels,
+        embd_dim=args.emb_dim
+    ).to(device)
 
-    # 2) 基本检查
-    sample = random.sample(items, k=min(8, len(items)))
-    exist_cnt = sum(1 for _, p in sample if os.path.exists(p))
-    print(f"sample exists: {exist_cnt}/{len(sample)}")
-    if exist_cnt == 0:
-        print("[ERROR] meta paths do not exist on disk. Example paths:")
-        for _, p in sample:
-            print(" ", p)
-        return
-
-    # speaker 统计
-    spk2paths = defaultdict(list)
-    for spk, p in items:
-        spk2paths[spk].append(p)
-    spks = list(spk2paths.keys())
-    print("unique speakers in val:", len(spks))
-    lens = sorted([len(v) for v in spk2paths.values()], reverse=True)
-    print("per-spk utt count top5:", lens[:5])
-
-    # 3) build pairs
-    pairs = build_pairs(items, num_pos=NUM_POS, num_neg=NUM_NEG, seed=SEED)
-    print("pairs:", len(pairs))
-
-    # 4) load model
-    ckpt = torch.load(CKPT, map_location="cpu")
-    model = ECAPA_TDNN(in_channels=80, channels=512, embd_dim=256).to(device)
     model.load_state_dict(ckpt["model"], strict=True)
     model.eval()
+    print(f"Model loaded: ECAPA-TDNN (channels={args.channels}, emb_dim={args.emb_dim})\n")
 
-    # 5) scoring
+    # 4. Scoring
     emb_cache = {}
     labels, scores = [], []
     missing = 0
-    used = 0
 
     for is_same, p1, p2 in tqdm(pairs, desc="Scoring"):
         if p1 not in emb_cache:
-            emb_cache[p1] = embed_from_fbank_pt(
-                model, p1, device,
-                crop_frames=CROP_FRAMES, num_crops=NUM_CROPS
-            )
+            emb_cache[p1] = embed_from_fbank_pt(model, p1, device, args.crop_frames, args.num_crops)
         if p2 not in emb_cache:
-            emb_cache[p2] = embed_from_fbank_pt(
-                model, p2, device,
-                crop_frames=CROP_FRAMES, num_crops=NUM_CROPS
-            )
+            emb_cache[p2] = embed_from_fbank_pt(model, p2, device, args.crop_frames, args.num_crops)
 
         e1 = emb_cache[p1]
         e2 = emb_cache[p2]
+
         if e1 is None or e2 is None:
             missing += 1
             continue
 
         scores.append(cosine_sim(e1, e2))
         labels.append(is_same)
-        used += 1
 
-    print(f"Scoring used pairs: {used}, skipped(missing feats): {missing}")
-    if used == 0:
-        print("[ERROR] used==0: cannot load any feature.")
+    print(f"\nScoring completed! Used pairs: {len(scores)}, Skipped: {missing}")
+
+    if len(scores) == 0:
+        print("[ERROR] No valid pairs! Check your feature paths.")
         return
 
-    # 6) EER
+    # 5. EER & Metrics
     eer, th = compute_eer(labels, scores)
-    print(f"EER = {eer*100:.2f}%  (best_th≈{th:.4f})")
+    print(f"\n>>> EER = {eer*100:.3f}%   (threshold ≈ {th:.4f})")
 
-    # 7) 额外自检：正负分数均值
-    pos_scores = [s for s, l in zip(scores, labels) if l == 1]
-    neg_scores = [s for s, l in zip(scores, labels) if l == 0]
-    print(f"pos mean={np.mean(pos_scores):.4f} std={np.std(pos_scores):.4f}  "
-          f"neg mean={np.mean(neg_scores):.4f} std={np.std(neg_scores):.4f}")
+    pos = [s for s, l in zip(scores, labels) if l == 1]
+    neg = [s for s, l in zip(scores, labels) if l == 0]
+    print(f"Pos mean: {np.mean(pos):.4f} | Neg mean: {np.mean(neg):.4f}")
 
-    # 8) ROC
+    # 6. Save Plots
     fpr, tpr = roc_points(labels, scores, num_th=200)
-    plt.figure()
+    plt.figure(figsize=(8, 6))
     plt.plot(fpr, tpr)
-    plt.xlabel("FPR")
-    plt.ylabel("TPR")
-    plt.title(f"ROC (EER={eer*100:.2f}%)")
+    plt.title(f"ROC Curve (EER = {eer*100:.2f}%)")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
     plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUT_DIR, "roc.png"))
+    plt.savefig(os.path.join(args.out_dir, "roc.png"), dpi=300)
     plt.close()
 
-    # 9) DET
     fars, frrs = det_points(labels, scores, num_th=400)
-    plt.figure()
+    plt.figure(figsize=(8, 6))
     plt.plot(fars, frrs)
-    plt.xlabel("FAR")
-    plt.ylabel("FRR")
-    plt.title(f"DET (EER={eer*100:.2f}%)")
+    plt.title(f"DET Curve (EER = {eer*100:.2f}%)")
+    plt.xlabel("False Acceptance Rate")
+    plt.ylabel("False Rejection Rate")
     plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUT_DIR, "det.png"))
+    plt.savefig(os.path.join(args.out_dir, "det.png"), dpi=300)
     plt.close()
 
-    # 10) Score histogram
-    plt.figure()
-    plt.hist(pos_scores, bins=60, alpha=0.6, label="same")
-    plt.hist(neg_scores, bins=60, alpha=0.6, label="diff")
+    plt.figure(figsize=(9, 6))
+    plt.hist(pos, bins=80, alpha=0.7, label="Same Speaker")
+    plt.hist(neg, bins=80, alpha=0.7, label="Different Speaker")
+    plt.title("Score Distribution")
+    plt.xlabel("Cosine Similarity")
+    plt.ylabel("Count")
     plt.legend()
-    plt.title("Score distribution (cosine, normalized emb)")
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUT_DIR, "score_hist.png"))
+    plt.grid(True)
+    plt.savefig(os.path.join(args.out_dir, "score_hist.png"), dpi=300)
     plt.close()
 
-    # 11) t-SNE + Recall@K（采样）
+    # 7. t-SNE + Recall@K
     X, y_tsne = collect_embeddings_for_tsne(
         model, items, device,
         max_spk=20, per_spk=25,
-        crop_frames=CROP_FRAMES, num_crops=NUM_CROPS,
-        seed=SEED
+        crop_frames=args.crop_frames,
+        num_crops=args.num_crops,
+        seed=args.seed
     )
 
-    if X is not None and y_tsne is not None:
-        if _HAS_SKLEARN:
-            tsne = TSNE(
-                n_components=2,
-                perplexity=min(30, max(5, (len(X) // 3))),
-                init="pca",
-                learning_rate="auto",
-                random_state=SEED,
-            )
-            Z = tsne.fit_transform(X)
+    if X is not None and _HAS_SKLEARN:
+        tsne = TSNE(n_components=2, perplexity=30, random_state=args.seed, init="pca")
+        Z = tsne.fit_transform(X)
 
-            plt.figure()
-            uniq = sorted(set(y_tsne.tolist()))
-            for spk_id in uniq:
-                mask = (y_tsne == spk_id)
-                plt.scatter(Z[mask, 0], Z[mask, 1], s=10, alpha=0.8)
-            plt.title("t-SNE of Speaker Embeddings (sampled, crop-avg)")
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(os.path.join(OUT_DIR, "tsne.png"))
-            plt.close()
-        else:
-            print("[WARN] sklearn not found, skip t-SNE. Install: pip install scikit-learn")
+        plt.figure(figsize=(10, 8))
+        for spk_id in np.unique(y_tsne):
+            mask = (y_tsne == spk_id)
+            plt.scatter(Z[mask, 0], Z[mask, 1], s=12, alpha=0.8)
+        plt.title("t-SNE Visualization of Speaker Embeddings")
+        plt.grid(True)
+        plt.savefig(os.path.join(args.out_dir, "tsne.png"), dpi=300)
+        plt.close()
 
+        # Recall@K
         emb_t = torch.from_numpy(X).float()
         emb_t = emb_t / (emb_t.norm(dim=1, keepdim=True) + 1e-12)
         lab_t = torch.from_numpy(y_tsne).long()
+        recall = recall_at_k(emb_t, lab_t, ks=(1, 5, 10))
 
-        r = recall_at_k(emb_t, lab_t, ks=(1, 5, 10))
-        print("Recall@K (sampled):", {f"R@{k}": round(v * 100, 2) for k, v in r.items()})
+        print("\nRecall@K (sampled):")
+        for k, v in recall.items():
+            print(f"  R@{k}: {v*100:.2f}%")
 
-        with open(os.path.join(OUT_DIR, "recall_at_k.txt"), "w", encoding="utf-8") as f:
-            for k, v in r.items():
+        with open(os.path.join(args.out_dir, "metrics.txt"), "w") as f:
+            f.write(f"EER: {eer*100:.3f}%\n")
+            f.write(f"Threshold: {th:.4f}\n")
+            for k, v in recall.items():
                 f.write(f"Recall@{k}: {v*100:.2f}%\n")
-    else:
-        print("[WARN] No embeddings collected for t-SNE/Recall@K")
 
-    print(f"Saved to: {OUT_DIR} (roc.png, det.png, score_hist.png, tsne.png?, recall_at_k.txt)")
+    print(f"\n所有结果已保存至: {args.out_dir}")
+    print("文件: roc.png, det.png, score_hist.png, tsne.png, metrics.txt")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Speaker Verification Evaluation Tool")
+
+    parser.add_argument("--val_meta", type=str, required=True,
+                        help="Path to validation meta.jsonl file")
+
+    parser.add_argument("--ckpt", type=str, required=True,
+                        help="Path to model checkpoint (.pt)")
+
+    parser.add_argument("--out_dir", type=str, default="outputs_eval",
+                        help="Directory to save evaluation results (default: outputs_eval)")
+
+    parser.add_argument("--crop_frames", type=int, default=400,
+                        help="Number of frames per crop (default: 400 ≈ 4秒)")
+
+    parser.add_argument("--num_crops", type=int, default=6,
+                        help="Number of crops to average (default: 6)")
+
+    parser.add_argument("--num_pos", type=int, default=3000,
+                        help="Number of positive pairs")
+
+    parser.add_argument("--num_neg", type=int, default=3000,
+                        help="Number of negative pairs")
+
+    parser.add_argument("--emb_dim", type=int, default=256,
+                        help="Embedding dimension (must match checkpoint)")
+
+    parser.add_argument("--channels", type=int, default=512,
+                        help="ECAPA channels (default: 512)")
+
+    parser.add_argument("--seed", type=int, default=1234,
+                        help="Random seed")
+
+    parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"],
+                        help="Device to use")
+
+    args = parser.parse_args()
+
+    main(args)

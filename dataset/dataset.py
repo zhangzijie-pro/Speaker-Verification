@@ -3,6 +3,7 @@ import os
 import random
 import torch
 from torch.utils.data import Dataset
+from utils.path_utils import _resolve_path
 
 
 class TrainFbankPtDataset(torch.utils.data.Dataset):
@@ -132,22 +133,3 @@ def collate_fixed(batch):
     y = torch.tensor(ys, dtype=torch.long)
     return x, y
 
-def _resolve_path(p: str, base_dir: str) -> str:
-    # 清理路径字符串
-    p = p.strip().strip('"').strip("'").strip()
-    p = p.lstrip("\ufeff")
-    p = p.replace("\\", "/")
-
-    # 相对路径 → 转绝对路径
-    if not os.path.isabs(p):
-        p = os.path.abspath(os.path.join(base_dir, p))
-    else:
-        p = os.path.abspath(p)
-
-    # 规范化
-    p = os.path.normpath(p).replace("\\", "/")
-
-    # 修复 processed/processed
-    p = p.replace("/processed/processed/", "/processed/")
-
-    return p

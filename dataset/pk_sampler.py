@@ -3,13 +3,6 @@ from collections import defaultdict
 from torch.utils.data import Sampler
 
 class PKBatchSampler(Sampler):
-    """
-    P-K sampler: 每个 batch 采样 P 个说话人，每个说话人 K 条语音
-    适用于声纹/度量学习。
-
-    你只要保证 Dataset 内部能通过 idx 取到 (feat, label, ...) 即可。
-    """
-
     def __init__(
         self,
         labels,             # list[int] 与 dataset 索引对齐：labels[i] = speaker_id
