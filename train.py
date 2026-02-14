@@ -12,11 +12,12 @@ from tqdm import tqdm
 from omegaconf import DictConfig, OmegaConf
 import hydra
 
-from models.ecapa import ECAPA_TDNN
-from loss_head.aamsoftmax import AAMSoftmax
+from speaker_verification.models.ecapa import ECAPA_TDNN
+from speaker_verification.head.aamsoftmax import AAMSoftmax
 from dataset.pk_sampler import PKBatchSampler
 from dataset.dataset import TrainFbankPtDataset, collate_fixed
 
+from speaker_verification.checkpointing import ModelCfg, build_ckpt, save_ckpt
 from utils.seed import set_seed
 from utils.meters import AverageMeter, top1_accuracy, compute_eer
 from utils.path_utils import _resolve_path
@@ -305,23 +306,26 @@ def main(cfg: DictConfig):
 
         # torch.cuda.empty_cache()
 
-        # 保存 checkpoint
-        ckpt = {
-            "epoch": epoch,
-            "model": model.state_dict(),
-            "head": head.state_dict(),
-            "optim": optim.state_dict(),
-            "history": history,
-            "num_classes": num_classes,
-            "label_map": train_ds.label_map,
-        }
-        torch.save(ckpt, os.path.join(cfg.out_dir, "last.pt"))
+        model_cfg = ModelCfg(
+            channels=cfg.model.channels,
+            emb_dim=cfg.model.emb_dim,
+            feat_dim=cfg.feature.n_mels,
+            sample_rate=cfg.audio.sample_rate,
+        )
 
-        if cfg.get("save_best", True) and val_eer < best_val_eer:
-            best_val_eer = val_eer
-            torch.save(ckpt, os.path.join(cfg.out_dir, "best.pt"))
-            print(f">> Saved best.pt (EER = {best_val_eer*100:.2f}%)")
-
+        ckpt = build_ckpt(
+            model=model,
+            head=head,
+            optim=optim,
+            scheduler=scheduler,
+            epoch=epoch,
+            best_eer=val_eer,
+            label_map=train_ds.label_map,
+            model_cfg=model_cfg,
+            extra={"cfg_text": cfg.to_yaml_string() if hasattr(cfg, "to_yaml_string") else None},
+        )
+        save_ckpt(os.path.join(cfg.out_dir, "last.pt"), ckpt)
+        
         if _HAS_PLOT:
             try:
                 plot_curves(cfg.out_dir, history)

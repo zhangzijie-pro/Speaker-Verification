@@ -15,7 +15,7 @@ project_root = os.path.dirname(current_dir)
 
 sys.path.append(project_root)
 
-from models.ecapa import ECAPA_TDNN
+from speaker_verification.models.ecapa import ECAPA_TDNN
 
 
 class Config:

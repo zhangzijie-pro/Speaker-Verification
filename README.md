@@ -55,18 +55,21 @@ Speaker-Verification/
 │   ├── dataset.py          # Train / validation datasets
 │   └── pk_sampler.py       # PK batch sampler (speaker-balanced)
 │
-├── models/
-│   └── ecapa.py            # ECAPA-TDNN implementation
-│
-├── loss_head/
-│   └── aamsoftmax.py       # AAM-Softmax loss
+├── speaker_verification/
+│   ├── checkpointing.py    
+│   ├── inference.py
+│   ├── head/
+│   │   └── aamsoftmax.py   # AAM-Softmax loss
+│   ├── models/
+│   │   └── epaca.py        # model
+│   └── audio/
+│       └── features.py     # extract features
 │
 ├── utils/
 │   ├── meters.py           # Accuracy, average meters
 │   ├── seed.py             # Reproducibility
 │   ├── plot.py             # Training curves
-│   ├── path_utils.py       # Deal to path error
-│   └── audio.py            # audio process utils
+│   └── path_utils.py       # Deal to path error
 │
 ├── scripts/
 │   └── export.py           # export onnx/mnn and split model, head

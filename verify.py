@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from utils.meters import compute_eer, roc_points, det_points, recall_at_k, _l2norm
 from utils.path_utils import _resolve_path
-from models.ecapa import ECAPA_TDNN
+from speaker_verification.models.ecapa import ECAPA_TDNN
 
 try:
     from sklearn.manifold import TSNE
