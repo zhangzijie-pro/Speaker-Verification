@@ -1,7 +1,7 @@
 
 ---
 
-# 🎙️ 声纹 Groove：基于 ECAPA-TDNN 的说话人验证系统
+# 🎙️ 说话人验证和声纹识别
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![GitHub stars](https://img.shields.io/github/stars/zhangzijie-pro/Speaker-Verification.svg?style=social)](https://github.com/zhangzijie-pro/Speaker-Verification/stargazers)
