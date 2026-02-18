@@ -49,7 +49,7 @@ Speaker-Verification/
 │   └── train_config.py     # Training hyperparameters
 │
 ├── demos/
-│   └── app.py              # gradio web to test
+│   └── real_time.py        # real time to listen audio to test
 │
 ├── data/
 │   ├── dataset.py          # Train / validation datasets
@@ -78,6 +78,7 @@ Speaker-Verification/
 ├── outputs_eval/           # Verification results (EER, ROC, DET, t-SNE)
 │
 ├── train.py                # Main training script
+├── finetune.py             # Main finetune script
 ├── verify_pairs.py         # Pairwise speaker verification
 ├── compare_two_wavs.py     # Compare two audio files
 │
