@@ -35,10 +35,10 @@
 
 ```
 Speaker-Verification/
-├── CN-Celeb_flac/          # Original CN-Celeb dataset (FLAC/WAV)
 │
 ├── processed/              # Preprocessed features & metadata
-│   └── cn_celeb2/
+│   ├── preprocess_cnceleb2_train.py
+│   └── cn_celeb2/          # outputs
 │       ├── fbank_pt/       # Saved fbank features (*.pt)
 │       ├── train_fbank_list.txt
 │       ├── val_meta.jsonl  # Validation metadata (speaker, feature path)
@@ -49,7 +49,7 @@ Speaker-Verification/
 │   └── train_config.py     # Training hyperparameters
 │
 ├── demos/
-│   └── real_time.py        # real time to listen audio to test
+│   └── real_time.py        # real time to listen audio and test
 │
 ├── data/
 │   ├── dataset.py          # Train / validation datasets
@@ -69,10 +69,8 @@ Speaker-Verification/
 │   ├── meters.py           # Accuracy, average meters
 │   ├── seed.py             # Reproducibility
 │   ├── plot.py             # Training curves
+│   ├── export.py           # export onnx/mnn and split model, head
 │   └── path_utils.py       # Deal to path error
-│
-├── scripts/
-│   └── export.py           # export onnx/mnn and split model, head
 │
 ├── outputs/                # Training outputs (checkpoints, curves)
 ├── outputs_eval/           # Verification results (EER, ROC, DET, t-SNE)
@@ -86,6 +84,7 @@ Speaker-Verification/
 ├── README_ch.md
 └── LICENSE
 ```
+
 ---
 
 ## 🚀 快速开始
