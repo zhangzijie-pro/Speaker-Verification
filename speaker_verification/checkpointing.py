@@ -48,6 +48,5 @@ def save_ckpt(path: str, ckpt: Dict[str, Any]) -> None:
 def load_ckpt(path: str, map_location: str = "cpu") -> Dict[str, Any]:
     ckpt = torch.load(path, map_location=map_location)
     if "model_cfg" not in ckpt:
-        # 兼容老 ckpt：给出默认值，但你最好尽快重新训练/重新导出
         ckpt["model_cfg"] = asdict(ModelCfg())
     return ckpt
