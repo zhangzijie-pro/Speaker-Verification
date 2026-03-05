@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from wrr_mixer import HybridEPA_WRR_Block
-from head.reat import REAT_DiarizationHead
+from speaker_verification.models.wrr_mixer import HybridEPA_WRR_Block
+from speaker_verification.models.head.reat import REAT_DiarizationHead
 
 
 class Res2Conv1dReluBn(nn.Module):

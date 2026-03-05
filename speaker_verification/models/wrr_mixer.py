@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from wtconv import WTConv1d
+from speaker_verification.models.wtconv import WTConv1d
 
 
 import torch

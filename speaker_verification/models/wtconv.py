@@ -3,8 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.append('./utils')
-import utils.wavelet as wavelet
+import speaker_verification.models.utils.wavelet as wavelet
 
 
 class WTConv1d(nn.Module):

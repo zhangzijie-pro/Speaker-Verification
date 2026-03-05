@@ -1,26 +1,28 @@
-train_list: processed/cn_celeb2/train_fbank_list.txt
-val_list: processed/cn_celeb2/val_meta.jsonl
-
-feat_dim: 80
-channels: 512
-emb_dim: 256  # 192
-
-# AAM-Softmax
-margin: 0.40
-scale: 40.0
-
-# train
-epochs: 150
-batch_size: 128
-num_workers: 2
-lr: 3e-4
-weight_decay: 3e-5
-grad_clip: 5.0
-
-# 设备
+seed: 1234
 device: "cuda"
-amp: True
+out_dir: "outputs_static"
 
-# 输出
-out_dir: "outputs"
-save_best: True
+data:
+  # preprocess_static_mix.py 的 out_dir
+  out_dir: "processed/static_mix_cnceleb2"
+  manifest: "train_manifest.jsonl"
+  crop_sec: 4.0
+
+model:
+  feat_dim: 80
+  channels: 512
+  emb_dim: 256
+
+loss:
+  lambda_ver: 1.0
+  lambda_diar: 0.5
+
+train:
+  epochs: 80
+  batch_size: 32
+  num_workers: 2
+  lr: 3e-4
+  weight_decay: 3e-5
+  grad_clip: 5.0
+  amp: true
+  val_batches: 100
