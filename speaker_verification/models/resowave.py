@@ -118,12 +118,12 @@ class ResoWave(nn.Module):
         
         return emb
     
-if __name__ == "__main__":
-    model = ResoWave()
-    x = torch.randn(2, 100, 80)  # [B, 80, T]
-    emb, speaker_ids, activity, speaker_count = model(x, return_diarization=True)
-    print("Embedding shape:", emb.shape)  # [B, 192]
-    print("Speaker IDs shape:", speaker_ids.shape)  # [B, T]
-    print("Activity shape:", activity.shape)  # [B, T]
-    print("Speaker count shape:", speaker_count.shape)  # [B]
-    print("model parameters:", sum(p.numel() for p in model.parameters()))
+# if __name__ == "__main__":
+#     model = ResoWave()
+#     x = torch.randn(2, 100, 80)  # [B, 80, T]
+#     emb, speaker_ids, activity, speaker_count = model(x, return_diarization=True)
+#     print("Embedding shape:", emb.shape)  # [B, 192]
+#     print("Speaker IDs shape:", speaker_ids.shape)  # [B, T]
+#     print("Activity shape:", activity.shape)  # [B, T]
+#     print("Speaker count shape:", speaker_count.shape)  # [B]
+#     print("model parameters:", sum(p.numel() for p in model.parameters()))

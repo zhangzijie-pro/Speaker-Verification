@@ -61,7 +61,6 @@ class MultiTaskLoss(nn.Module):
 
         device = emb.device
 
-        # AAMSoftmax label 必须 long
         if not torch.is_tensor(label):
             label = torch.tensor(label, device=device)
         label = label.long()
@@ -74,17 +73,6 @@ class MultiTaskLoss(nn.Module):
             target_ids, target_activity, target_count
         )
         diar_loss = _to_scalar_loss(diar_out, device)
-
-        # 只打印一次，确认类型（非常关键：确保你改的文件真的生效）
-        if not self._printed:
-            self._printed = True
-            print("[DBG] ver_loss type:", type(ver_loss), "shape:", getattr(ver_loss, "shape", None))
-            print("[DBG] diar_out type:", type(diar_out))
-            if isinstance(diar_out, (tuple, list)):
-                print("[DBG] diar_out[0] type:", type(diar_out[0]))
-            if isinstance(diar_out, dict):
-                print("[DBG] diar_out keys:", list(diar_out.keys()))
-            print("[DBG] diar_loss final type:", type(diar_loss), "shape:", getattr(diar_loss, "shape", None))
 
         total = self.lambda_ver * ver_loss + self.lambda_diar * diar_loss
         return total

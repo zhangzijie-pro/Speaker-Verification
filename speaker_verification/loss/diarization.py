@@ -4,15 +4,6 @@ import torch.nn.functional as F
 
 
 class DiarizationLoss(nn.Module):
-    """
-    支持两种 pred_ids 形式：
-      1) pred_ids: [B,T]    -> 认为是“已经离散化的 id”，只能做弱监督（不推荐）
-      2) pred_ids: [B,T,K]  -> 认为是每帧 K 类 logits（推荐），对 target_ids 做 CE
-
-    约定：
-      target_ids: [B,T]，值域 {0..K-1} 或 {0..K} 都行，但要与你生成数据一致
-      - 若你数据是 0=静音, 1..k=slot，那么 K 应该 >= (max(target_ids)+1)
-    """
 
     def __init__(self, max_spk: int, act_w: float = 1.0, id_w: float = 1.0, cnt_w: float = 1.0, act_th: float = 0.5):
         super().__init__()
@@ -32,7 +23,6 @@ class DiarizationLoss(nn.Module):
         target_activity,     # [B,T] float 0/1
         target_count,        # [B] long/int
     ):
-        # ---- 统一形状 ----
         if target_ids.dim() == 1:
             target_ids = target_ids.unsqueeze(0)
             target_activity = target_activity.unsqueeze(0)
@@ -43,8 +33,6 @@ class DiarizationLoss(nn.Module):
         B, T = target_ids.shape
 
         # ---- activity loss ----
-        # 你的模型如果输出 pred_activity 已经是 prob(0..1)，那要先 clamp 并用 BCE(prob)；
-        # 但更推荐你输出 logits，然后用 BCEWithLogitsLoss。
         if pred_activity.shape != (B, T):
             # 常见情况：[B,T,1]
             if pred_activity.dim() == 3 and pred_activity.size(-1) == 1:
@@ -59,7 +47,6 @@ class DiarizationLoss(nn.Module):
             pred_act_logits = pred_activity
 
         act_loss_per = self.bce(pred_act_logits, target_activity.float())  # [B,T]
-        # 让说话帧更重要（可选）
         weight = 1.0 + target_activity.float()
         act_loss = (act_loss_per * weight).mean()
 
@@ -69,8 +56,6 @@ class DiarizationLoss(nn.Module):
         if pred_ids.dim() == 3:
             # pred_ids: [B,T,K] or [B,K,T]  logits
             if pred_ids.dtype in (torch.long, torch.int64, torch.int32):
-                # 这说明你拿到的不是 logits，而是离散整数（不可导）
-                # 这里直接跳过 id_loss，避免 CE 报错
                 id_loss = torch.tensor(0.0, device=target_ids.device)
             else:
                 # 确保 float
