@@ -6,6 +6,8 @@ import torch
 import torchaudio
 from tqdm import tqdm
 from collections import defaultdict
+import sys
+sys.path.append("..")
 from speaker_verification.audio.features import wav_to_fbank, load_wav_mono
 
 class PrepConfig:
@@ -63,8 +65,13 @@ def main():
                     wav = load_wav_mono(wav_path, target_sr=CFG.TARGET_SR)
                     if len(wav) < CFG.TARGET_SR * CFG.MIN_SEC:
                         continue
-
-                    fbank = wav_to_fbank(wav, num_mel_bins=CFG.N_MELS)  # [T, 80]
+                    
+                    fbank = wav_to_fbank(
+                        wav,
+                        n_mels=CFG.N_MELS,
+                        num_crops=1,
+                        crop_sec=max(CFG.MIN_SEC, float(len(wav)) / CFG.TARGET_SR),  # 让 crop 覆盖整段音频
+                    )[0]
                     key = safe_key(wav_path, CFG.CN_ROOT)
                     feat_path = os.path.join(feat_dir, f"{spk}__{key}.pt").replace("\\", "/")
                     torch.save(fbank, feat_path)
