@@ -4,20 +4,17 @@ import torch
 
 class AverageMeter:
     def __init__(self):
-        self.sum = 0.0
-        self.cnt = 0
+        self.reset()
 
     def reset(self):
         self.sum = 0.0
-        self.cnt = 0
+        self.count = 0
+        self.avg = 0.0
 
     def update(self, val, n=1):
-        self.sum += float(val) * int(n)
-        self.cnt += int(n)
-
-    @property
-    def avg(self):
-        return self.sum / max(1, self.cnt)
+        self.sum += float(val) * n
+        self.count += n
+        self.avg = self.sum / max(1, self.count)
 
 
 def top1_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
@@ -50,15 +47,12 @@ def compute_eer(labels, scores):
     P = int(labels.sum())
     N = int(labels.size - P)
     if P == 0 or N == 0:
-        # 无法定义 EER，给个兜底
         return 1.0, float(scores.max())
 
-    # 按 score 从大到小排序
     order = np.argsort(scores)[::-1]
     scores_s = scores[order]
     labels_s = labels[order]
 
-    # 扫描阈值：把分数从高到低逐步放开
     tp = 0
     fp = 0
 
@@ -67,11 +61,9 @@ def compute_eer(labels, scores):
     best_th = float(scores_s[0] + 1e-6)
     best_diff = abs(0.0 - 1.0)
 
-    # 遍历每个 unique 分数点（更稳）
     i = 0
     while i < labels_s.size:
         th = scores_s[i]
-        # 把所有 score == th 的样本一次性加入
         j = i
         while j < labels_s.size and scores_s[j] == th:
             if labels_s[j] == 1:
@@ -158,7 +150,6 @@ def recall_at_k(embeddings: torch.Tensor, labels: torch.Tensor, ks=(1, 5, 10)):
         k = int(k)
         hit = 0
         topk = idx[:, :k]  # [M,k]
-        # 向量化一点点
         for i in range(M):
             if (labels[topk[i]] == labels[i]).any().item():
                 hit += 1
@@ -175,74 +166,81 @@ def diarization_error_rate(
     pred_activity: torch.Tensor,
     target_activity: torch.Tensor,
     act_th: float = 0.5,
+    valid_mask: torch.Tensor = None,
+    return_detail: bool = False,
 ):
     """
-    DER（帧级）：
-      FA: pred_active=1 & gt_active=0
-      MISS: pred_active=0 & gt_active=1
-      CONF: pred_active=1 & gt_active=1 & pred_id != gt_id
-    DER = (FA + MISS + CONF) / max(1, gt_active_frames)
+    帧级 DER:
+      FA   = pred_active=1 & gt_active=0
+      MISS = pred_active=0 & gt_active=1
+      CONF = pred_active=1 & gt_active=1 & pred_id != gt_id
 
-    兼容：
-      pred_ids: [B,T] 或 [B,T,K] logits 或 [B,K,T] logits
-      target_ids: [B,T]
-      pred_activity/target_activity: [B,T]（可为 logits 或 prob）
+    注意:
+      这个定义默认 target_ids 和 pred_ids 的类别语义一致。
+      若你的 target_ids 是“每条混合语音内部重新编号”的局部 ID，
+      那还需要再做 permutation matching。
     """
-    # ---- 统一到 [B,T] / [B,T,K] ----
-    if pred_ids.dim() == 1:
-        pred_ids = pred_ids.unsqueeze(0)
+    if target_ids.dim() == 1:
         target_ids = target_ids.unsqueeze(0)
-        pred_activity = pred_activity.unsqueeze(0)
         target_activity = target_activity.unsqueeze(0)
+        pred_activity = pred_activity.unsqueeze(0)
+        if pred_ids.dim() == 1:
+            pred_ids = pred_ids.unsqueeze(0)
 
-    # ---- 将 pred_ids logits -> id ----
+    B, T = target_ids.shape
+
+    # ---------- decode pred ids ----------
     if pred_ids.dim() == 3:
-        B = target_ids.size(0)
-        T = target_ids.size(1)
-
-        # pred_ids 可能是 [B,T,K] 或 [B,K,T]
-        if pred_ids.size(0) != B:
-            raise ValueError(f"pred_ids B mismatch: {pred_ids.shape} vs B={B}")
-
         if pred_ids.size(1) == T:
-            # [B,T,K]
-            pred_id = pred_ids.argmax(dim=-1)  # [B,T]
+            pred_id = pred_ids.argmax(dim=-1)  # [B,T,K] -> [B,T]
         elif pred_ids.size(2) == T:
-            # [B,K,T] -> [B,T,K]
             pred_id = pred_ids.permute(0, 2, 1).contiguous().argmax(dim=-1)
         else:
-            raise ValueError(f"pred_ids shape not compatible with T={T}: {pred_ids.shape}")
+            raise ValueError(f"pred_ids shape not compatible with T={T}: {tuple(pred_ids.shape)}")
     elif pred_ids.dim() == 2:
         pred_id = pred_ids
     else:
-        raise ValueError(f"Unsupported pred_ids dim {pred_ids.dim()} shape={pred_ids.shape}")
+        raise ValueError(f"Unsupported pred_ids shape: {tuple(pred_ids.shape)}")
 
-    # ---- activity logits/prob -> bool ----
+    # ---------- logits -> prob ----------
     def to_prob(x: torch.Tensor) -> torch.Tensor:
-        # 如果像概率（0..1）就直接用，否则当 logits 用 sigmoid
-        if x.dtype.is_floating_point:
-            xmin = float(x.min().item())
-            xmax = float(x.max().item())
-            if 0.0 <= xmin and xmax <= 1.0:
-                return x
-            return torch.sigmoid(x)
-        return x.float()
+        if not x.dtype.is_floating_point:
+            return x.float()
+        xmin = float(x.min().item())
+        xmax = float(x.max().item())
+        if 0.0 <= xmin and xmax <= 1.0:
+            return x
+        return torch.sigmoid(x)
 
     pred_p = to_prob(pred_activity)
     gt_p = to_prob(target_activity)
 
-    pred_act = (pred_p >= act_th)
-    gt_act = (gt_p >= act_th)
+    pred_act = pred_p >= act_th
+    gt_act = gt_p >= act_th
 
-    if pred_id.shape != target_ids.shape:
-        raise ValueError(f"pred_id {pred_id.shape} != target_ids {target_ids.shape}")
+    if valid_mask is None:
+        valid_mask = torch.ones_like(gt_act, dtype=torch.bool)
+    else:
+        valid_mask = valid_mask.bool()
+
+    pred_act = pred_act & valid_mask
+    gt_act = gt_act & valid_mask
 
     fa = (pred_act & ~gt_act).sum().float()
     miss = (~pred_act & gt_act).sum().float()
-
     both = pred_act & gt_act
     conf = (both & (pred_id != target_ids)).sum().float()
 
     denom = gt_act.sum().float().clamp_min(1.0)
     der = (fa + miss + conf) / denom
+
+    if return_detail:
+        return der, {
+            "fa": float(fa.item()),
+            "miss": float(miss.item()),
+            "conf": float(conf.item()),
+            "gt_active": float(denom.item()),
+            "pred_active": float(pred_act.sum().item()),
+        }
+
     return der

@@ -209,4 +209,5 @@ outputs/
 *.wav
 CN-Celeb_flac/
 
-processed/
+processed/cn_celeb2/
+processed/static_mix_celeb2/
