@@ -1,33 +1,23 @@
 import torch
 import torch.nn as nn
+
 from speaker_verification.loss.aamsoftmax import AAMSoftmax
 from speaker_verification.loss.diarization import DiarizationLoss
 
 
 def _to_scalar_loss(x, device):
-    """
-    把各种可能的返回值 (Tensor/float/tuple/list/dict) 统一转成 标量Tensor
-    """
-    # 1) Tensor
     if torch.is_tensor(x):
         return x
-
-    # 2) float/int
     if isinstance(x, (float, int)):
         return torch.tensor(float(x), device=device)
-
-    # 3) tuple/list：优先取第一个元素
     if isinstance(x, (tuple, list)):
         if len(x) == 0:
             return torch.tensor(0.0, device=device)
         return _to_scalar_loss(x[0], device)
-
-    # 4) dict：优先找常见 key
     if isinstance(x, dict):
         for k in ("loss", "total", "diar_loss"):
             if k in x:
                 return _to_scalar_loss(x[k], device)
-        # 找不到就把所有 tensor/数值相加兜底
         s = 0.0
         found = False
         for v in x.values():
@@ -40,8 +30,6 @@ def _to_scalar_loss(x, device):
         if found:
             return _to_scalar_loss(s, device)
         return torch.tensor(0.0, device=device)
-
-    # 5) 其他类型：直接报出来
     raise TypeError(f"Unsupported loss type: {type(x)}")
 
 
@@ -50,29 +38,39 @@ class MultiTaskLoss(nn.Module):
         super().__init__()
         self.ver_loss = AAMSoftmax(embedding_dim, num_classes)
         self.diar_loss = DiarizationLoss(max_spk=max_spk)
-
         self.lambda_ver = float(lambda_ver)
         self.lambda_diar = float(lambda_diar)
 
-        self._printed = False
-
-    def forward(self, emb, pred_ids, pred_activity, pred_count,
-                label, target_ids, target_activity, target_count):
-
+    def forward(
+        self,
+        emb,
+        pred_ids,
+        pred_activity,
+        pred_count,
+        label,
+        target_ids,
+        target_activity,
+        target_count,
+        valid_mask=None,
+    ):
         device = emb.device
-
         if not torch.is_tensor(label):
             label = torch.tensor(label, device=device)
-        label = label.long()
 
+        label = label.long()
         ver_loss = self.ver_loss(emb, label)
         ver_loss = _to_scalar_loss(ver_loss, device)
 
-        diar_out = self.diar_loss(
-            pred_ids, pred_activity, pred_count,
-            target_ids, target_activity, target_count
+        diar_loss = self.diar_loss(
+            pred_ids,
+            pred_activity,
+            pred_count,
+            target_ids,
+            target_activity,
+            target_count,
+            valid_mask=valid_mask,
         )
-        diar_loss = _to_scalar_loss(diar_out, device)
+        diar_loss = _to_scalar_loss(diar_loss, device)
 
         total = self.lambda_ver * ver_loss + self.lambda_diar * diar_loss
         return total
