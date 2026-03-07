@@ -3,24 +3,29 @@ device: "cuda"
 out_dir: "outputs_static"
 
 data:
-  # preprocess_static_mix.py 的 out_dir
   out_dir: "processed/static_mix_cnceleb2"
-  manifest: "train_manifest.jsonl"
+  train_manifest: "train_manifest.jsonl"
+  val_manifest: "val_manifest.jsonl"
   crop_sec: 4.0
 
 model:
   feat_dim: 80
   channels: 512
-  emb_dim: 256
+  emb_dim: 192
+  max_mix_speakers: 4
 
 loss:
   lambda_ver: 1.0
   lambda_diar: 0.5
+  act_w: 1.0
+  id_w: 1.0
+  cnt_w: 0.2
+  pos_weight: 2.0
 
 train:
   epochs: 80
-  batch_size: 32
-  num_workers: 2
+  batch_size: 16
+  num_workers: 4
   lr: 3e-4
   weight_decay: 3e-5
   grad_clip: 5.0

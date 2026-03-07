@@ -1,4 +1,3 @@
-# train_static.py
 import os
 import json
 import numpy as np
@@ -44,7 +43,8 @@ def validate(model, loader, device, max_batches=200):
         target_act = batch["target_activity"].to(device)
         valid_mask = batch["valid_mask"].to(device)
 
-        emb, pred_ids, pred_act, pred_count = model(fbank, return_diarization=True)
+        # emb, pred_ids, pred_act, pred_count = model(fbank, return_diarization=True)
+        emb, frame_embeds, frame_logits, pred_act, pred_count = model(fbank, return_diarization=True)
 
         # SV: batch 内随机配对
         for i in range(len(emb)):
@@ -55,7 +55,7 @@ def validate(model, loader, device, max_batches=200):
                 eer_labels.append(label)
 
         der, info = diarization_error_rate(
-            pred_ids,
+            frame_logits,
             target_ids,
             pred_act,
             target_act,
@@ -110,11 +110,11 @@ def train_one_epoch(model, loss_fn, loader, device, optim, scaler, use_amp, grad
         optim.zero_grad(set_to_none=True)
 
         with torch.amp.autocast(device_type=device.type, enabled=use_amp):
-            emb, pred_ids, pred_act, pred_count = model(fbank, return_diarization=True)
+            emb, frame_embeds, frame_logits, pred_act, pred_count = model(fbank, return_diarization=True)
 
             loss = loss_fn(
                 emb,
-                pred_ids,
+                frame_logits,
                 pred_act,
                 pred_count,
                 spk_label,
@@ -156,15 +156,14 @@ def main(cfg: DictConfig):
 
     train_dataset = StaticMixDataset(
         out_dir=cfg.data.out_dir,
-        manifest=cfg.data.manifest,
+        manifest=cfg.data.train_manifest,
         crop_sec=float(cfg.data.crop_sec),
         shuffle=True,
     )
 
-    val_manifest = cfg.data.get("val_manifest", cfg.data.manifest)
     val_dataset = StaticMixDataset(
         out_dir=cfg.data.out_dir,
-        manifest=val_manifest,
+        manifest=cfg.data.val_manifest,
         crop_sec=float(cfg.data.crop_sec),
         shuffle=False,
     )
@@ -192,14 +191,20 @@ def main(cfg: DictConfig):
         in_channels=int(cfg.model.feat_dim),
         channels=int(cfg.model.channels),
         embd_dim=int(cfg.model.emb_dim),
+        num_classes=int(train_dataset.num_classes),
+        max_mix_speakers=int(cfg.model.max_mix_speakers),
     ).to(device)
 
-    # Loss
     loss_fn = MultiTaskLoss(
         embedding_dim=int(cfg.model.emb_dim),
-        num_classes=int(train_dataset.num_classes),
+        num_classes=int(train_dataset.num_classes),          # 全局speaker类别数
         lambda_ver=float(cfg.loss.lambda_ver),
         lambda_diar=float(cfg.loss.lambda_diar),
+        max_spk=int(cfg.model.max_mix_speakers),             # 最大混合人数
+        act_w=float(cfg.loss.act_w),
+        id_w=float(cfg.loss.id_w),
+        cnt_w=float(cfg.loss.cnt_w),
+        pos_weight=float(cfg.loss.pos_weight),
     ).to(device)
 
     optim = torch.optim.AdamW(

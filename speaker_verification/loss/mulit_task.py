@@ -34,10 +34,27 @@ def _to_scalar_loss(x, device):
 
 
 class MultiTaskLoss(nn.Module):
-    def __init__(self, embedding_dim=192, num_classes=1000, lambda_ver=1.0, lambda_diar=0.5, max_spk=10):
+    def __init__(
+        self,
+        embedding_dim=192,
+        num_classes=1000,          # 全局speaker类别数，给AAMSoftmax和frame_logits用
+        lambda_ver=1.0,
+        lambda_diar=0.5,
+        max_spk=4,                 # 最大混合人数，给count head用
+        act_w=1.0,
+        id_w=1.0,
+        cnt_w=1.0,
+        pos_weight=2.0,
+    ):
         super().__init__()
         self.ver_loss = AAMSoftmax(embedding_dim, num_classes)
-        self.diar_loss = DiarizationLoss(max_spk=max_spk)
+        self.diar_loss = DiarizationLoss(
+            max_spk=max_spk,
+            act_w=act_w,
+            id_w=id_w,
+            cnt_w=cnt_w,
+            pos_weight=pos_weight,
+        )
         self.lambda_ver = float(lambda_ver)
         self.lambda_diar = float(lambda_diar)
 
@@ -54,10 +71,11 @@ class MultiTaskLoss(nn.Module):
         valid_mask=None,
     ):
         device = emb.device
+
         if not torch.is_tensor(label):
             label = torch.tensor(label, device=device)
-
         label = label.long()
+
         ver_loss = self.ver_loss(emb, label)
         ver_loss = _to_scalar_loss(ver_loss, device)
 

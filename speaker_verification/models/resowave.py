@@ -81,7 +81,14 @@ class AttentiveStatsPool(nn.Module):
 
 
 class ResoWave(nn.Module):
-    def __init__(self, in_channels=80, channels=512, embd_dim=192, max_speakers=10):
+    def __init__(
+        self,
+        in_channels=80,
+        channels=512,
+        embd_dim=192,
+        num_classes=1000,
+        max_mix_speakers=5,
+    ):
         super().__init__()
         self.layer1 = Conv1dReluBn(in_channels, channels, kernel_size=5, padding=2)
         self.layer2 = SE_Res2Block(channels, kernel_size=3, stride=1, padding=2, dilation=2, scale=8)
@@ -97,7 +104,8 @@ class ResoWave(nn.Module):
         self.diar_head = REAT_DiarizationHead(
             in_dim=channels,
             emb_dim=embd_dim,
-            num_speakers_max=max_speakers,
+            num_classes=num_classes,
+            max_mix_speakers=max_mix_speakers,
         )
 
     def forward(self, x, return_diarization=False):
@@ -121,7 +129,7 @@ class ResoWave(nn.Module):
 
         if return_diarization:
             frame_feat = out4.transpose(1, 2).contiguous()  # [B,T,512]
-            frame_embeds, activity_logits, count_logits = self.diar_head(frame_feat)
-            return emb, frame_embeds, activity_logits, count_logits
+            frame_embeds, frame_logits, activity_logits, count_logits = self.diar_head(frame_feat)
+            return emb, frame_embeds, frame_logits, activity_logits, count_logits
 
         return emb
