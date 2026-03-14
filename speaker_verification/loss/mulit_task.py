@@ -67,66 +67,142 @@ class MultiTaskLoss(nn.Module):
             torch.tensor([pos_weight], dtype=torch.float32)
         )
 
+    # def _frame_proto_loss(
+    #     self,
+    #     frame_embeds,
+    #     target_matrix,
+    #     valid_mask=None,
+    # ):
+    #     """
+    #     bug unsupport(类内拉近 + 类间推远)
+    #     同一 speaker 的帧接近自己的 prototype
+
+    #     远离其他 speaker 的 prototype
+    #     """
+    #     device = frame_embeds.device
+    #     B, T, D = frame_embeds.shape
+    #     K = target_matrix.size(-1)
+
+    #     target_matrix = target_matrix.float().to(device)
+
+    #     if valid_mask is None:
+    #         valid_mask = torch.ones(B, T, dtype=torch.bool, device=device)
+    #     else:
+    #         valid_mask = valid_mask.bool().to(device)
+
+    #     total_loss = frame_embeds.new_tensor(0.0)
+    #     total_count = frame_embeds.new_tensor(0.0)
+
+    #     frame_embeds = F.normalize(frame_embeds, p=2, dim=-1)
+
+    #     for b in range(B):
+    #         vb = valid_mask[b]                       # [T]
+    #         fb = frame_embeds[b]                     # [T,D]
+    #         tb = target_matrix[b]                    # [T,K]
+
+    #         if not vb.any():
+    #             continue
+    #         fb_valid = fb[vb]                        # [Tv,D]
+    #         tb_valid = tb[vb]                        # [Tv,K]
+
+    #         # speaker prototype: [K,D]
+    #         # numer = sum_t mask(t,k) * f_t
+    #         weights = tb_valid                       # [Tv,K]
+    #         denom = weights.sum(dim=0).clamp_min(self.proto_eps)  # [K]
+
+    #         # [K,D]
+    #         protos = torch.einsum("tk,td->kd", weights, fb_valid) / denom.unsqueeze(-1)
+    #         protos = F.normalize(protos, p=2, dim=-1)
+
+    #         # [Tv,K]
+    #         sim = torch.einsum("td,kd->tk", fb_valid, protos)
+
+    #         # loss = 1 - cos
+    #         # pos_loss = (1.0 - sim) * weights
+    #         pos_loss = ((1.0 - sim).clamp_min(0.0)) * weights
+
+    #         pos_count = weights.sum()
+    #         if pos_count > 0:
+    #             total_loss = total_loss + pos_loss.sum()
+    #             total_count = total_count + pos_count
+
+    #     if total_count.item() == 0:
+    #         return frame_embeds.new_tensor(0.0)
+
+    #     return total_loss / total_count
+
     def _frame_proto_loss(
         self,
         frame_embeds,
         target_matrix,
         valid_mask=None,
+        temperature=0.07,           # 新增超参，常用范围 0.05~0.2
     ):
-        """
-        bug unsupport(类内拉近 + 类间推远)
-        同一 speaker 的帧接近自己的 prototype
-
-        远离其他 speaker 的 prototype
-        """
         device = frame_embeds.device
         B, T, D = frame_embeds.shape
         K = target_matrix.size(-1)
-
-        target_matrix = target_matrix.float().to(device)
 
         if valid_mask is None:
             valid_mask = torch.ones(B, T, dtype=torch.bool, device=device)
         else:
             valid_mask = valid_mask.bool().to(device)
 
+        frame_embeds = F.normalize(frame_embeds, p=2, dim=-1)   # [B,T,D]
+
         total_loss = frame_embeds.new_tensor(0.0)
         total_count = frame_embeds.new_tensor(0.0)
 
-        frame_embeds = F.normalize(frame_embeds, p=2, dim=-1)
-
         for b in range(B):
-            vb = valid_mask[b]                       # [T]
-            fb = frame_embeds[b]                     # [T,D]
-            tb = target_matrix[b]                    # [T,K]
-
+            vb = valid_mask[b]                    # [T]
             if not vb.any():
                 continue
-            fb_valid = fb[vb]                        # [Tv,D]
-            tb_valid = tb[vb]                        # [Tv,K]
 
-            # speaker prototype: [K,D]
-            # numer = sum_t mask(t,k) * f_t
-            weights = tb_valid                       # [Tv,K]
-            denom = weights.sum(dim=0).clamp_min(self.proto_eps)  # [K]
+            f = frame_embeds[b][vb]               # [Tv, D]
+            target = target_matrix[b][vb]         # [Tv, K]  one-hot or soft
 
-            # [K,D]
-            protos = torch.einsum("tk,td->kd", weights, fb_valid) / denom.unsqueeze(-1)
-            protos = F.normalize(protos, p=2, dim=-1)
+            spk_mask = target.sum(dim=0) > self.proto_eps     # [K]
+            if spk_mask.sum() < 2:
+                continue
 
-            # [Tv,K]
-            sim = torch.einsum("td,kd->tk", fb_valid, protos)
+            # prototype [n_active_spk, D]
+            weights = target[:, spk_mask]                     # [Tv, n_active]
+            denom = weights.sum(dim=0).clamp_min(self.proto_eps)
+            protos = (weights.unsqueeze(-1) * f.unsqueeze(1)).sum(dim=0) / denom.unsqueeze(-1)
+            protos = F.normalize(protos, p=2, dim=-1)         # [n_active, D]
 
-            # loss = 1 - cos
-            # pos_loss = (1.0 - sim) * weights
-            pos_loss = ((1.0 - sim).clamp_min(0.0)) * weights
+            sim = torch.matmul(f, protos.T) / temperature     # [Tv, n_active]
 
-            pos_count = weights.sum()
-            if pos_count > 0:
-                total_loss = total_loss + pos_loss.sum()
-                total_count = total_count + pos_count
+            pos_mask = weights > 0.5                          # [Tv, n_active]  hard label
 
-        if total_count.item() == 0:
+            # 每个样本至少要有1个正样本
+            has_pos = pos_mask.any(dim=1)
+            if not has_pos.any():
+                continue
+
+            # InfoNCE / supervised contrastive loss
+            # log exp(sim_pos) / sum exp(sim_all)
+            # exp_sim = torch.exp(sim)
+            # pos = (exp_sim * pos_mask.float()).sum(dim=1, keepdim=True)
+            # denom = exp_sim.sum(dim=1, keepdim=True).clamp_min(1e-6)
+
+            # log_prob = torch.log(pos / denom + 1e-8)
+            # loss_per_frame = -log_prob.squeeze(-1) * has_pos.float()
+
+            log_denom = torch.logsumexp(sim, dim=1, keepdim=True)   # [Tv,1]
+
+            neg_inf = torch.full_like(sim, -1e9)
+            pos_logits = torch.where(pos_mask, sim, neg_inf)
+            log_pos = torch.logsumexp(pos_logits, dim=1, keepdim=True)  # [Tv,1]
+
+            log_prob = log_pos - log_denom
+            loss_per_frame = -log_prob.squeeze(-1) * has_pos.float()
+
+            n_valid = has_pos.sum()
+            if n_valid > 0:
+                total_loss += loss_per_frame.sum()
+                total_count += n_valid
+
+        if total_count < 1:
             return frame_embeds.new_tensor(0.0)
 
         return total_loss / total_count

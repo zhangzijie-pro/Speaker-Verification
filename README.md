@@ -20,18 +20,6 @@
 
 ---
 
-python verify_resowave.py \
-  --ckpt outputs/best.pt \
-  --val_meta processed/cn_celeb2/val_meta.jsonl \
-  --static_mix_dir processed/static_mix_cnceleb2 \
-  --manifest val_manifest.jsonl \
-  --channels 512 \
-  --embd_dim 192 \
-  --max_mix_speakers 5 \
-  --device cuda
-
----
-
 ## 📜 License
 
 This project is released under the **Apache License 2.0**.  
